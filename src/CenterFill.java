@@ -1,3 +1,5 @@
+import sun.management.resources.agent_ja;
+
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.BufferedOutputStream;
@@ -6,18 +8,28 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
 
-/**
- * Created by Mike on 3/3/14.
- */
 public class CenterFill {
+
+    private static final int bitsPerChannel = 6;
+    private static final int snapshots = 60;
+    private static final String algorithm = "avg";
 
     private static int w;
     private static int h;
 
     public static void main(String[] args) {
-        int bitsPerChannel = 5;
+        // calculate the number of possible colors
         int maxValue = (int) Math.pow(2, bitsPerChannel);
         int totalPixels = (int) Math.pow(maxValue, 3);
+        int nextSnap = totalPixels / snapshots;
+        int snapshot = 0;
+        int channelMask = 1;
+        for(int i = 1; i < bitsPerChannel; i++) {
+            channelMask <<= 1;
+            channelMask++;
+        }
+
+        // determine the dimensions needed to fit every color
         double squareWidth = Math.sqrt(totalPixels);
         w = (int) squareWidth;
         h = (int) squareWidth;
@@ -26,24 +38,21 @@ public class CenterFill {
             while(w < squareWidth) w *= 2;
             h = totalPixels / w;
         }
-        int channelMask = 1;
-        for(int i = 1; i < bitsPerChannel; i++) {
-            channelMask <<= 1;
-            channelMask++;
-        }
+        // set the size for Point to calculate adjacents
+        Point.w = w;
+        Point.h = h;
+
         System.out.println(bitsPerChannel + " bits per channel");
         System.out.println(maxValue + "^3 = " + totalPixels + " distinct colors");
         System.out.println(w + "x" + h + " px image");
 
-        getAdjacent(new Point(0, 0));
-        getAdjacent(new Point(1, 1));
-        getAdjacent(new Point(w - 1, 0));
-        ArrayList<Integer> colors = new ArrayList<>();
+        // generate all the colors
+        ArrayList<RGB> colors = new ArrayList<>();
         int r = 0;
         int g = 0;
         int b = 0;
         for(int i = 0; i < totalPixels; i++) {
-            colors.add((((r * 255 / channelMask) << 8 | (g * 255 / channelMask)) << 8) | (b * 255 / channelMask));
+            colors.add(new RGB(r * 255 / channelMask, g * 255 / channelMask, b * 255 / channelMask));
             if(r++ == channelMask) {
                 r = 0;
                 if(g++ == channelMask) {
@@ -54,58 +63,96 @@ public class CenterFill {
             }
         }
 
-        int[][] pixels = new int[w][h];
+        // algorithm to place each pixel starting from the center and expanding outward
+        RGB[][] pixels = new RGB[w][h];
         ArrayList<Point> edge = new ArrayList<>();
+
+        // seed points;
+        for(int i = 0; i < 5; i++) {
+            Point p = new Point((int)(Math.random() * w), (int)(Math.random() * h));
+            pixels[p.x][p.y] = colors.remove((int) (Math.random() * colors.size()));
+            edge.addAll(p.getAdjacent());
+        }
+
         while(colors.size() > 0) {
-            int c = colors.get((int)(Math.random() * colors.size()));
-            Point p = new Point();
-            if(colors.size() == totalPixels) {
-                p.x = w / 2;
-                p.y = h / 2;
-                edge = getAdjacent(p);
-            } else {
-                Point min = new Point();
-                int minD = Integer.MAX_VALUE;
-                // for each point in the open list
-                for(Point np: edge) {
-                    // find minimum difference adjacent color
-                    for(Point test: getAdjacent(np)) {
-                        // d = color at test - c
-                        // if(d < minD) {
-                        //  minD = d;
-                        //  min = test;
-                    }
-                }
-                p.x = min.x;
-                p.y = min.y;
-            }
-            pixels[p.x][p.y] = c;
-        }
+            // pick a random color
+            RGB c = colors.remove((int) (Math.random() * colors.size()));
+            Point newPoint = edge.get(0);
+            int minDifference = Integer.MAX_VALUE;
 
-        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-
-        try (OutputStream out = new BufferedOutputStream(new FileOutputStream("RGB.png"))) {
-            ImageIO.write(img, "png", out);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static ArrayList<Point> getAdjacent(Point p) {
-        ArrayList<Point> result = new ArrayList<>();
-        for(int dx = -1; dx <= 1; dx++) {
-            for(int dy = -1; dy <= 1; dy++) {
-                if(p.x + dx > -1 && p.x + dx < w) {
-                    if(p.y + dy > -1 && p.y + dy < h) {
-                        if(dx != 0 || dy != 0) {
-                            result.add(new Point(p.x + dx, p.y + dy));
+            if(algorithm == "min") {
+                // find the edge point with the most similar neighbor
+                for(Point edgePoint: edge) {
+                    for(Point adjacent: edgePoint.getAdjacent()) {
+                        RGB adjacentColor = pixels[adjacent.x][adjacent.y];
+                        if(adjacentColor != null) {
+                            int d = c.distanceTo(adjacentColor);
+                            if(d < minDifference) {
+                                minDifference = d;
+                                newPoint = edgePoint;
+                            }
                         }
                     }
                 }
+            } else if(algorithm == "avg") {
+                // find the edge point with the most similar average neighbors
+                for(Point edgePoint: edge) {
+                    int avgDifference = 0;
+                    int adjacentPoints = 0;
+                    for(Point adjacent: edgePoint.getAdjacent()) {
+                        RGB adjacentColor = pixels[adjacent.x][adjacent.y];
+                        if(adjacentColor != null) {
+                            int d = c.distanceTo(adjacentColor);
+                            avgDifference += d;
+                            adjacentPoints++;
+                        }
+                    }
+                    avgDifference /= adjacentPoints;
+                    if(avgDifference < minDifference) {
+                        minDifference = avgDifference;
+                        newPoint = edgePoint;
+                    }
+                }
+            }
+
+            // set the pixel
+            pixels[newPoint.x][newPoint.y] = c;
+
+            // update the edge list
+            edge.remove(newPoint);
+            for(Point adjacent: newPoint.getAdjacent()) {
+                boolean contains = false;
+                for(Point edgePoint: edge)
+                    if(adjacent.equals(edgePoint)) contains = true;
+                if(!contains && pixels[adjacent.x][adjacent.y] == null)
+                    edge.add(adjacent);
+            }
+
+            if(nextSnap-- == 0) {
+                nextSnap = totalPixels / snapshots;
+                takeSnapshot(pixels, snapshot++);
             }
         }
-        System.out.println(result);
-        return result;
+        takeSnapshot(pixels, snapshot);
+    }
+
+    private static void takeSnapshot(RGB[][] pixels, int n) {
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+
+        for(int x = 0; x < w; x++) {
+            for(int y = 0; y < h; y++) {
+                RGB c = pixels[x][y];
+                img.setRGB(x, y, c == null ? 0 : c.toInt());
+            }
+        }
+
+        String filename = "RGB" + String.format("%04d", n) + ".png";
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(filename))) {
+            ImageIO.write(img, "png", out);
+            System.out.println("Writing " + filename);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
 }
